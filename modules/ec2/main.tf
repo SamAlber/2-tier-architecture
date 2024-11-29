@@ -19,13 +19,21 @@ resource "aws_instance" "this" {
   # It typically includes:
   # The hostname (e.g., web-server).
   # The domain name (e.g., example.com).
-  user_data = <<-EOT
+
+  user_data = base64encode(<<-EOT
     #!/bin/bash
+    # Update system packages
     yum update -y
-    amazon-linux-extras install nginx1
-    systemctl enable nginx
-    systemctl start nginx
-    echo "Welcome to NGINX on $(hostname -f)" > /usr/share/nginx/html/index.html
+
+    # Install Docker
+    amazon-linux-extras enable docker
+    yum install -y docker
+    systemctl start docker
+    systemctl enable docker
+
+    # Run NGINX in Docker
+    docker run -d --name nginx -p 80:80 nginx
   EOT
+  )
 }
 

@@ -1,5 +1,7 @@
 # 2-Tier Archtecture Project Documentation 
 
+![Architecture](https://github.com/SamAlber/aws-cloud-website/blob/ba1398211d1b1543649f845ddd0f9fd3ccba2580/frontend/assets/imgs/2-tier-architecture.png)
+
 ---
 
 ## Table of Contents
