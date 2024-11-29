@@ -1,4 +1,4 @@
-# 2-Tier-Archtecture Project Documentation
+# 2-Tier Archtecture Project 
 
 ---
 
@@ -83,6 +83,9 @@ Internet
 
    - **CIDR Block**: `10.0.0.0/16`
    - **Purpose**: Provides an isolated virtual network for AWS resources, allowing control over IP addressing, subnets, route tables, and network gateways.
+   - **Configuration**:
+     - `enable_dns_support`: `true` (Enables DNS resolution within the VPC).
+     - `enable_dns_hostnames`: `true` (Enables DNS hostnames for instances).
 
 2. **Subnets**:
 
@@ -91,43 +94,54 @@ Internet
      - **CIDR Blocks**: Defined in `var.public_subnet_cidrs` (e.g., `10.0.1.0/24`, `10.0.2.0/24`).
      - **Purpose**: Host resources that need direct access to the internet, such as the ALB and EC2 instances.
      - **Configuration**:
-
        - `map_public_ip_on_launch`: `true` (Automatically assigns public IPs to instances launched in these subnets).
        - **Availability Zones**: Dynamically assigned using available AZs.
+     - **Implementation Details**:
+       - **Dynamic Subnet Creation**: Terraform uses a `count` loop to create multiple subnets, assigning different CIDR blocks and AZs dynamically.
 
    - **Private Subnets**: Two subnets in different AZs.
 
      - **CIDR Blocks**: Defined in `var.private_subnet_cidrs` (e.g., `10.0.3.0/24`, `10.0.4.0/24`).
      - **Purpose**: Host resources that should not be directly accessible from the internet, such as the RDS database.
      - **Configuration**:
-
        - **Availability Zones**: Same as public subnets to ensure high availability.
+     - **Implementation Details**:
+       - **Dynamic Subnet Creation**: Similar to public subnets, private subnets are created using a loop.
 
 3. **Internet Gateway (IGW)**:
 
    - **Purpose**: Enables resources within public subnets to communicate with the internet.
    - **Integration**: Attached to the VPC and routes traffic from public subnets to the internet.
 
-4. **NAT Gateways**:
-
-   - **Purpose**: Allows instances in private subnets to access the internet securely.
-   - **Configuration**:
-
-     - **Elastic IPs**: Each NAT Gateway is associated with an Elastic IP (EIP).
-     - **High Availability**: One NAT Gateway per Availability Zone for fault tolerance.
-     - **Placement**: Deployed in public subnets.
-
-5. **Route Tables**:
+4. **Route Tables**:
 
    - **Public Route Table**:
 
-     - **Routes**: Directs internet-bound traffic from public subnets to the IGW.
-     - **Association**: Associated with all public subnets.
+     - **Purpose**: Directs internet-bound traffic from public subnets to the IGW.
+     - **Configuration**:
+       - **Routes**:
+         - `0.0.0.0/0` via the IGW (Allows all outbound internet traffic).
+     - **Association**:
+       - Associated with all public subnets using `aws_route_table_association`.
 
    - **Private Route Tables**:
 
-     - **Routes**: Directs internet-bound traffic from private subnets to the NAT Gateway in the same AZ.
-     - **Association**: Each private subnet has its own route table associated with the NAT Gateway in the same AZ.
+     - **Purpose**: Directs internet-bound traffic from private subnets to the NAT Gateway in the same AZ.
+     - **Configuration**:
+       - **Routes**:
+         - `0.0.0.0/0` via the NAT Gateway (Allows outbound internet access through NAT).
+     - **Association**:
+       - Each private subnet has its own route table associated with the NAT Gateway in the same AZ.
+
+5. **NAT Gateways**:
+
+   - **Purpose**: Allows instances in private subnets to access the internet securely.
+   - **Configuration**:
+     - **Elastic IPs**: Each NAT Gateway is associated with an Elastic IP (EIP).
+     - **High Availability**: One NAT Gateway per Availability Zone for fault tolerance.
+     - **Placement**: Deployed in public subnets.
+     - **Implementation Details**:
+       - **Dynamic Creation**: NAT Gateways and EIPs are created using loops to match the number of private subnets.
 
 **Integration and Flow**:
 
@@ -135,6 +149,12 @@ Internet
 - **Private Subnets**: Provide a secure environment for the RDS database, shielding it from direct internet access.
 - **NAT Gateways**: Ensure private resources can access external services (e.g., for updates) without exposing them to incoming internet traffic.
 - **High Availability**: Using multiple NAT Gateways in different AZs avoids single points of failure and reduces latency.
+
+**Why Use Loops and Dynamic Assignments?**
+
+- **Scalability**: Makes it easy to add more subnets or AZs without duplicating code.
+- **Consistency**: Ensures consistent configuration across similar resources.
+- **Dynamic Selection**: Assigns resources like subnets and NAT Gateways to specific AZs based on availability.
 
 ### Security Groups
 
@@ -148,26 +168,39 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
   - **HTTP (Port 80)**: Allow traffic from anywhere (`0.0.0.0/0`).
   - **HTTPS (Port 443)**: Allow traffic from anywhere (`0.0.0.0/0`).
   - **SSH (Port 22)**: Allow traffic from a specific IP (e.g., your public IP) for secure management access.
+    - **Implementation Note**: The IP is found using `curl http://checkip.amazonaws.com`, and `/32` restricts access to a single IP.
+  - **Rationale**:
+    - **HTTP/HTTPS Access**: Necessary for users to access the web application.
+    - **SSH Access**: Restricted to specific IPs to enhance security.
 
 - **Outbound Rules**:
 
   - **All Traffic**: Allow all outbound traffic to any destination (`0.0.0.0/0`).
+  - **Rationale**: Allows instances to communicate with external services (e.g., APIs, updates).
+
+- **Tags**: Helps in identifying the security group in the AWS console.
 
 #### Database Layer Security Group (`db_sg`):
 
 - **Purpose**: Controls traffic for the RDS database.
 - **Inbound Rules**:
 
-  - **MySQL/Aurora (Port 3306)**: Allow traffic from instances associated with `web_sg`. This ensures that only the web servers can access the database.
+  - **MySQL/Aurora (Port 3306)**: Allow traffic from instances associated with `web_sg`.
+    - **Implementation Note**: Uses `security_groups = [aws_security_group.web_sg.id]` to allow only from the web security group.
+  - **Rationale**:
+    - Restricts database access to only the web servers, enhancing security.
 
 - **Outbound Rules**:
 
   - **All Traffic**: Allow all outbound traffic to any destination (`0.0.0.0/0`).
+  - **Rationale**: Allows the database to perform necessary operations like backups or updates.
+
+- **Tags**: Helps in identifying the security group in the AWS console.
 
 **Security Considerations**:
 
 - By restricting inbound database traffic to the web security group, we prevent unauthorized access from other sources.
-- Outbound rules are set to allow all traffic to enable the database to perform necessary operations like backups or updates.
+- Using security groups instead of CIDR blocks allows for dynamic scaling of web servers without modifying the database security group rules.
 
 ### EC2 Instances
 
@@ -176,31 +209,53 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
 1. **IAM Instance Profile**:
 
    - **Purpose**: Allows EC2 instances to assume an IAM role, granting permissions to access AWS services (e.g., SSM Parameter Store).
-   - **Configuration**: An IAM role is created and attached to the EC2 instances via an instance profile.
+   - **Configuration**:
+     - **IAM Role**: Created with policies that define permissions.
+     - **Instance Profile**: Wraps the IAM role to attach it to the EC2 instance.
+   - **Why Use an Instance Profile?**
+     - AWS requires an instance profile to attach an IAM role to an EC2 instance.
+     - It enables secure access to AWS services without hardcoding credentials.
 
 2. **Key Pair**:
 
    - **Purpose**: Enables secure SSH access to EC2 instances.
-   - **Creation**: A key pair is created and imported into AWS using the `aws_key_pair` resource.
-   - **Usage**: The private key is kept securely on the local machine; the public key is uploaded to AWS.
+   - **Creation**:
+     - **Resource**: `aws_key_pair` is used to create or import an existing public key.
+     - **Command**: `ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""` generates a key pair.
+   - **Usage**:
+     - The private key is kept securely on the local machine.
+     - The public key is uploaded to AWS and associated with the EC2 instances.
+   - **Accessing EC2 Instances**:
+     - Use `ssh -i ~/.ssh/id_rsa ec2-user@<public_ip>` to connect.
+     - Replace `<public_ip>` with the instance's public IP address.
 
 3. **Launch Template and EC2 Module**:
 
+   - **Module**: `./modules/ec2` encapsulates the EC2 instance configuration.
    - **AMI**: Amazon Linux 2 (`ami-0c02fb55956c7d316`).
+     - **Note**: AMI IDs are region-specific; ensure the correct AMI ID for your region.
    - **Instance Type**: `t2.micro` (configurable based on needs).
    - **Subnet Assignment**: Instances are launched in public subnets.
+     - **Implementation Note**: Uses `subnet_ids = aws_subnet.public[*].id` to assign to all public subnets.
    - **Security Groups**: Associated with `web_sg`.
-   - **User Data**: A script to install NGINX and configure the web server upon instance launch.
+   - **Instance Profile**: Attached via `instance_profile`.
+   - **User Data**:
+     - A script to install NGINX and configure the web server upon instance launch.
+     - **Encoding**: Ensured proper Base64 encoding using `base64encode` function.
 
-4. **Auto Scaling Group (Future Enhancement)**:
+4. **Instance Count**:
 
-   - While not currently implemented, the architecture allows for easy integration of an Auto Scaling Group for dynamic scaling.
+   - **Configuration**: `instance_count = 2` to launch two instances.
+   - **Rationale**: Provides basic redundancy and load balancing.
 
 #### How It Works:
 
 - **Web Server Setup**: Instances automatically install and configure NGINX upon launch using user data scripts.
 - **IAM Role**: Instances can securely access AWS services (e.g., retrieve secrets from SSM Parameter Store) without hardcoding credentials.
 - **SSH Access**: Restricted to a specific IP address for security; key pair ensures encrypted connections.
+- **Scaling Considerations**:
+  - Using a module allows for easy adjustment of instance count.
+  - Future integration with Auto Scaling Groups is possible.
 
 ### Application Load Balancer (ALB)
 
@@ -210,7 +265,7 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
 
    - **Type**: Application Load Balancer (Layer 7).
    - **Scheme**: Internet-facing (accessible from the internet).
-   - **Subnets**: Deployed in public subnets for internet-facing access.
+   - **Subnets**: Deployed in public subnets.
    - **Security Groups**: Associated with `web_sg` to allow HTTP/HTTPS traffic.
 
 2. **Target Group**:
@@ -219,6 +274,7 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
    - **Protocol**: HTTP.
    - **Port**: 80.
    - **Health Checks**: Configured to monitor the health of instances by checking the root path (`/`).
+   - **Name**: Specified as `web-target-group`.
 
 3. **Listener**:
 
@@ -241,6 +297,12 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
      }
      ```
 
+   - **Explanation**:
+     - **Dynamic Attachment**: Loops through EC2 instance IDs to attach each one to the target group.
+     - **Why Not Reference Directly?**:
+       - Cannot reference `aws_instance` directly from the root module because instances are created within a module.
+       - Must use outputs from the module (`module.ec2.instance_ids`).
+
 #### How It Works:
 
 - **Traffic Distribution**: ALB distributes incoming HTTP requests across multiple EC2 instances in the target group.
@@ -254,6 +316,11 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
 3. **Web Server Response**: The EC2 instance processes the request and sends the response back to the ALB.
 4. **Response Delivery**: The ALB sends the response back to the user's browser.
 
+**Security Considerations**:
+
+- **Security Groups**: Ensure that the ALB's security group allows inbound traffic on the necessary ports.
+- **Integration with EC2 Instances**: EC2 instances' security group allows traffic from the ALB.
+
 ### RDS Database
 
 #### Components:
@@ -263,25 +330,33 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
    - **Engine**: MySQL 8.0.
    - **Multi-AZ Deployment**: Provides high availability and automatic failover between AZs.
    - **Instance Class**: `db.m5.large` (adjustable based on performance requirements).
+     - **Note**: Chosen based on workload requirements; can be adjusted.
    - **Storage**:
-
      - **Allocated Storage**: 20 GB (initial size).
      - **Max Allocated Storage**: 100 GB (allows for auto-scaling storage as needed).
-
    - **Security**: Placed in private subnets with no public access (`publicly_accessible = false`).
    - **Parameter Group**: Uses default MySQL 8.0 parameter group.
+     - **Note**: AWS does not create specific parameter groups for minor versions.
 
 2. **DB Subnet Group**:
 
    - **Purpose**: Defines which subnets the RDS instance can use (private subnets).
    - **Configuration**: Includes all private subnets.
+   - **Implementation Note**:
+     - **Resource**: `aws_db_subnet_group` is used to specify subnets.
 
 3. **Credentials Management**:
 
    - **AWS SSM Parameter Store**:
-
      - **Purpose**: Securely stores database username and password.
-     - **Retrieval**: Credentials are fetched in Terraform using `data "aws_ssm_parameter"` resources with decryption.
+     - **Retrieval**: Credentials are fetched in Terraform using `data "aws_ssm_parameter"` resources with decryption (`with_decryption = true`).
+     - **Implementation Note**:
+       - Parameters `db_username` and `db_password` are stored in SSM manually.
+
+4. **Security Group**:
+
+   - Associated with `db_sg` to control inbound and outbound traffic.
+   - Ensures only web servers can access the database.
 
 #### How It Works:
 
@@ -290,6 +365,17 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
 - **Secure Access**: Only EC2 instances with the appropriate security group (`web_sg`) can access the database on port 3306.
 - **Credential Management**: Database credentials are securely stored and managed via SSM Parameter Store, avoiding hardcoding sensitive information.
 
+**Why Place RDS in Private Subnets?**
+
+- **No Need for Public Access**: Databases typically only need to be accessed internally.
+- **Enhanced Security**: Reduces exposure to potential attacks by isolating the database.
+- **Compliance**: Aligns with best practices and compliance requirements for data protection.
+
+**Connecting EC2 and RDS**
+
+- **Internal Networking**: Communication occurs over the VPC's internal network.
+- **No NAT Gateway Required for EC2 to RDS**: Since both are within the VPC, they can communicate directly.
+
 ### NAT Gateway and Internet Access
 
 #### Components:
@@ -297,35 +383,71 @@ Security groups are virtual firewalls that control inbound and outbound traffic 
 1. **Elastic IPs (EIPs)**:
 
    - **Purpose**: Provide static public IP addresses for the NAT Gateways.
-   - **Configuration**: One EIP per NAT Gateway.
+   - **Configuration**:
+     - **Resource**: `aws_eip` is used to allocate Elastic IPs.
+     - **Domain**: Set to `vpc` to associate with a VPC resource.
+     - **Count**: Created based on the number of private subnets.
 
 2. **NAT Gateways**:
 
    - **Purpose**: Allows instances in private subnets to access the internet for updates and external communications.
    - **Configuration**:
-
      - **High Availability**: One NAT Gateway per Availability Zone.
      - **Placement**: Deployed in public subnets.
-     - **Association**: Each private subnet routes traffic through the NAT Gateway in the same AZ.
+     - **Association**:
+       - Each private subnet routes traffic through the NAT Gateway in the same AZ.
+     - **Implementation Details**:
+       - **Resource**: `aws_nat_gateway` is created with a loop to match the number of private subnets.
+       - **Dependencies**: Relies on the EIPs and public subnets.
 
 3. **Private Route Tables**:
 
    - **Purpose**: Routes outbound internet traffic from private subnets through the NAT Gateways.
    - **Configuration**:
-
-     - **Routes**: `0.0.0.0/0` pointing to the NAT Gateway.
-     - **Association**: Each private subnet has its own route table.
+     - **Routes**:
+       - `0.0.0.0/0` pointing to the NAT Gateway (default route for all traffic).
+     - **Association**:
+       - Each private subnet has its own route table associated.
+     - **Implementation Details**:
+       - **Resource**: `aws_route_table` and `aws_route_table_association` are used with loops.
 
 #### How It Works:
 
-- **Outbound Internet Access**: Instances in private subnets send outbound traffic to the NAT Gateway, which forwards it to the internet.
-- **Inbound Traffic Restriction**: NAT Gateways do not allow inbound traffic from the internet to private subnets, ensuring security.
-- **High Availability**: By deploying NAT Gateways in each AZ, the architecture avoids single points of failure and reduces latency.
+- **Outbound Internet Access**:
+  - Instances in private subnets send outbound traffic to the NAT Gateway, which forwards it to the internet.
+  - The NAT Gateway uses its Elastic IP to communicate with external services.
+- **Inbound Traffic Restriction**:
+  - NAT Gateways do not allow inbound traffic from the internet to private subnets, ensuring security.
+- **High Availability**:
+  - By deploying NAT Gateways in each AZ, the architecture avoids single points of failure and reduces latency.
 
 **Why Multiple NAT Gateways?**
 
 - **Fault Tolerance**: If one AZ experiences an outage, the NAT Gateway in another AZ ensures continued internet access for resources in that AZ.
-- **Reduced Latency and Costs**: Keeping NAT Gateways in the same AZ as the private subnets avoids cross-AZ data transfer costs and reduces latency.
+- **Reduced Latency and Costs**:
+  - Keeping NAT Gateways in the same AZ as the private subnets avoids cross-AZ data transfer costs.
+  - Improves performance by reducing latency.
+
+**Traffic Flow Explanation**
+
+1. **Outbound Traffic from Private Subnets**:
+
+   - Private instances send traffic destined for the internet.
+   - The route table directs this traffic to the NAT Gateway in the same AZ.
+   - The NAT Gateway forwards the traffic to the Internet Gateway.
+
+2. **Inbound Traffic to Private Subnets**:
+
+   - NAT Gateways do not support inbound traffic initiation.
+   - Inbound traffic to private subnets must come through other means (e.g., via the ALB if configured).
+
+**Understanding Route Tables and CIDR Blocks**
+
+- **Route Definition**:
+  - `cidr_block = "0.0.0.0/0"` specifies that the route applies to all destinations not explicitly defined elsewhere.
+- **Security Implications**:
+  - Allows outbound internet access without exposing private subnets to inbound internet traffic.
+  - Inbound traffic is still controlled by security groups and the absence of direct routes from the IGW.
 
 ---
 
@@ -381,6 +503,7 @@ Understanding the user flow is crucial to comprehending how the system component
 
   - **SSH Access**: Restricted to specific IP addresses for management purposes.
   - **IAM Roles**: EC2 instances use IAM roles to securely access AWS services without hardcoded credentials.
+  - **Security Groups**: Control traffic flow between components.
 
 - **High Availability**:
 
@@ -423,29 +546,31 @@ Terraform is used to define and provision the infrastructure in a consistent and
 
 5. **Resource Configuration Highlights**:
 
-   - **VPC and Subnets**: Defined with CIDR blocks and availability zones.
-   - **Security Groups**: Configured with specific inbound and outbound rules.
-   - **EC2 Instances**:
+   - **Dynamic Resource Creation**:
+     - Uses loops (`count` and `for_each`) to create multiple resources like subnets, NAT Gateways, and route tables.
+     - **Advantages**:
+       - Reduces code duplication.
+       - Simplifies management of resources across multiple AZs.
+   - **Variable Usage**:
+     - CIDR blocks, availability zones, and other configurations are parameterized using variables (`var.vpc_cidr`, `var.public_subnet_cidrs`, etc.).
+     - **Benefits**:
+       - Increases flexibility.
+       - Allows for easy adjustments without code changes.
 
-     - **IAM Instance Profile**: Allows instances to assume roles.
-     - **Key Pair**: Created and used for SSH access.
-     - **Launch Template**: Automates instance configuration.
+   - **Comments and Documentation**:
+     - Inline comments in `main.tf` explain the purpose and reasoning behind configurations.
+     - **Purpose**:
+       - Enhances understanding.
+       - Serves as documentation for future reference.
 
-   - **Load Balancer**:
+6. **Testing and Validation**:
 
-     - **Module**: Configures the ALB, target groups, listeners, and security groups.
-     - **Target Group Attachment**: Registers EC2 instances with the ALB.
-
-   - **RDS Database**:
-
-     - **Module**: Configures the RDS instance with parameters fetched from SSM Parameter Store.
-     - **DB Subnet Group**: Ensures RDS uses private subnets.
-
-   - **NAT Gateways and Route Tables**:
-
-     - **Elastic IPs**: Allocated for NAT Gateways.
-     - **NAT Gateways**: Deployed in public subnets.
-     - **Private Route Tables**: Configured to route traffic through NAT Gateways.
+   - **Connectivity Tests**:
+     - SSH into EC2 instances to verify access.
+     - Test database connectivity from EC2 instances to RDS.
+   - **Verification**:
+     - Ensure that security groups are correctly configured.
+     - Validate that ALB is distributing traffic as expected.
 
 ### CI/CD with GitHub Actions
 
@@ -461,18 +586,27 @@ GitHub Actions is used to automate the deployment pipeline for both infrastructu
      - **Approval**: Optional manual approval step can be added before applying changes.
      - **Deployment**: Runs `terraform apply` to provision or update resources.
 
+   - **Error Handling**:
+     - Workflow fails if validation or planning errors occur.
+     - Logs are available for troubleshooting.
+
 2. **Application Deployment**:
 
    - **Build and Test**: Compiles and tests application code (if applicable).
    - **Deployment Script**:
 
      - Uses `scp` or other methods to transfer application files to EC2 instances.
-     - **Alternative**: Use AWS CodeDeploy or configuration management tools like Ansible for more robust deployment.
+     - **Considerations**:
+       - May require additional configuration for SSH access.
+       - **Alternative**: Use AWS CodeDeploy or configuration management tools like Ansible for more robust deployment.
 
 3. **Security and Credentials**:
 
    - **Secrets Management**: AWS credentials and other secrets are stored securely in GitHub Secrets.
    - **IAM Roles**: Use of IAM roles and policies to restrict permissions to only what is necessary.
+   - **Best Practices**:
+     - Rotate credentials regularly.
+     - Limit permissions to the minimum required.
 
 4. **Error Handling and Notifications**:
 
@@ -498,6 +632,10 @@ Understanding the integration between components is key to appreciating the syst
   - Control inbound and outbound traffic at the instance and subnet level.
   - Ensure only authorized traffic flows between components.
 
+- **Dynamic Assignments**:
+
+  - Resources like subnets and NAT Gateways are assigned to AZs dynamically, enhancing scalability and fault tolerance.
+
 ### EC2 and ALB Integration
 
 - **Target Group Attachment**:
@@ -510,6 +648,11 @@ Understanding the integration between components is key to appreciating the syst
   - The EC2 instances' security group allows traffic from the ALB's security group.
   - The ALB's security group allows inbound traffic from the internet on port 80.
 
+- **Why Use Modules and Outputs?**
+
+  - **Encapsulation**: Modules hide internal resources, exposing only what's necessary.
+  - **Outputs**: Used to retrieve information like instance IDs from modules.
+
 ### EC2 and RDS Integration
 
 - **Database Connectivity**:
@@ -520,6 +663,7 @@ Understanding the integration between components is key to appreciating the syst
 - **Credential Management**:
 
   - Database credentials are securely retrieved from SSM Parameter Store by the application running on EC2 instances.
+  - **IAM Role Usage**: Allows secure access without hardcoding credentials.
 
 ### NAT Gateways and Internet Access
 
@@ -531,6 +675,10 @@ Understanding the integration between components is key to appreciating the syst
 - **High Availability**:
 
   - Multiple NAT Gateways ensure that if one AZ fails, resources in other AZs can still access the internet.
+
+- **Cost Considerations**:
+
+  - Avoids cross-AZ data transfer costs by keeping NAT Gateways in the same AZ as the private subnets.
 
 ### High Availability and Fault Tolerance
 
@@ -558,7 +706,7 @@ Understanding the integration between components is key to appreciating the syst
 
 **Issue**:
 
-- The launch template failed to execute the `user_data` script due to improper BASE64 encoding.
+- The launch template failed to execute the `user_data` script due to improper Base64 encoding.
 
 **Solution**:
 
@@ -567,8 +715,9 @@ Understanding the integration between components is key to appreciating the syst
 
 **Explanation**:
 
-- AWS expects the `user_data` field to be base64-encoded.
+- AWS expects the `user_data` field to be Base64-encoded.
 - Incorrect encoding leads to errors during instance initialization.
+- Proper encoding ensures that the script runs successfully upon instance launch.
 
 ### Challenge 2: Replacing EC2 Instances on Every Apply
 
@@ -618,6 +767,7 @@ resource "aws_lb_target_group_attachment" "ec2_targets" {
 
 - Loops through EC2 instance IDs to attach each one to the target group.
 - Ensures that as instances are added or removed, the target group is updated accordingly.
+- Cannot reference resources inside a module directly; must use module outputs.
 
 **Result**:
 
@@ -670,9 +820,9 @@ resource "aws_lb_target_group_attachment" "ec2_targets" {
 
 ## Frequently Asked Questions (FAQ)
 
-**Q1: Why use multiple NAT Gateways instead of one?**
+**Q1: Why use loops and dynamic assignments in Terraform code?**
 
-**A**: Using multiple NAT Gateways, one per Availability Zone (AZ), enhances fault tolerance and reduces latency. If an AZ becomes unavailable, resources in other AZs can still access the internet through their local NAT Gateway. Additionally, this avoids cross-AZ data transfer costs and improves performance.
+**A**: Loops and dynamic assignments (using `count` and `for_each`) make the code more scalable and maintainable. They reduce duplication by allowing you to create multiple resources with similar configurations, such as subnets, NAT Gateways, and route tables, based on variable input.
 
 ---
 
@@ -706,32 +856,30 @@ resource "aws_lb_target_group_attachment" "ec2_targets" {
 
 ---
 
-**Q7: Can this architecture handle sudden spikes in traffic?**
+**Q7: Why use an IAM Instance Profile instead of directly attaching an IAM Role to EC2 instances?**
+
+**A**: AWS requires an IAM Instance Profile to attach an IAM Role to an EC2 instance. The instance profile acts as a container for the IAM Role and enables the instance to assume the role and gain the specified permissions.
+
+---
+
+**Q8: Can this architecture handle sudden spikes in traffic?**
 
 **A**: Currently, the architecture can handle moderate fluctuations. Implementing Auto Scaling Groups (ASGs) and scaling policies would enable the system to automatically adjust to sudden spikes in traffic.
 
 ---
 
-**Q8: How is security enforced between components?**
+**Q9: How is security enforced between components?**
 
 **A**: Security is enforced using security groups and network ACLs that define inbound and outbound traffic rules. Resources in private subnets are not accessible from the internet, and least privilege principles are applied to IAM roles and policies.
 
 ---
 
-**Q9: What are the benefits of Multi-AZ deployment for RDS?**
+**Q10: What are the benefits of Multi-AZ deployment for RDS?**
 
 **A**: Multi-AZ deployment provides enhanced availability and durability by automatically replicating data to a standby instance in a different AZ. In case of an infrastructure failure, RDS can failover to the standby without manual intervention.
-
----
-
-**Q10: Why is an IAM Instance Profile used for EC2 instances?**
-
-**A**: An IAM Instance Profile allows EC2 instances to assume an IAM role, granting them permissions to access AWS services securely (e.g., SSM Parameter Store). This avoids hardcoding credentials and enhances security.
 
 ---
 
 ## Conclusion
 
 This project demonstrates the implementation of a robust, scalable, and secure two-tier architecture on AWS, utilizing Infrastructure as Code with Terraform and automating deployments with GitHub Actions. By integrating detailed explanations from the `main.tf` configuration, we gain a comprehensive understanding of each component's role, how they interact, and the underlying theory. Future enhancements can further optimize the architecture for production workloads, improve scalability, security, and operational efficiency.
-
----
