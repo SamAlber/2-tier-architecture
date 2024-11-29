@@ -1,4 +1,4 @@
-# 2-Tier Archtecture Project 
+# 2-Tier Archtecture Project Documentation 
 
 ---
 
